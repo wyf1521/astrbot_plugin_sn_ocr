@@ -1,0 +1,10 @@
+name: astrbot_plugin_sn_ocr
+display_name: Sn_OCR 电脑信息识别
+desc: 调用 Sn_OCR 的外部 OCR 接口，识别消息中的电脑信息截图。
+version: 1.0.0
+author: Sn_OCR
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - discord

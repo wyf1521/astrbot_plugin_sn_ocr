@@ -1,0 +1,30 @@
+{
+  "api_base": {
+    "type": "string",
+    "description": "Sn_OCR 服务地址",
+    "default": "http://127.0.0.1:5000",
+    "hint": "插件会请求地址下的 /api/v1/ocr"
+  },
+  "api_token": {
+    "type": "string",
+    "description": "SN_OCR_API_TOKEN",
+    "default": "",
+    "hint": "C85X2KJIKL72AqZWIr19qg=="
+  },
+  "duplicate_policy": {
+    "type": "string",
+    "description": "默认重复记录策略",
+    "default": "skip",
+    "options": ["skip", "overwrite"]
+  },
+  "timeout": {
+    "type": "int",
+    "description": "单次请求超时（秒）",
+    "default": 180
+  },
+  "max_images": {
+    "type": "int",
+    "description": "单条消息最多提交的图片数",
+    "default": 20
+  }
+}
