@@ -3,6 +3,7 @@ display_name: Sn_OCR 电脑信息识别
 desc: 调用 Sn_OCR 的外部 OCR 接口，识别消息中的电脑信息截图。
 version: 1.0.0
 author: Sn_OCR
+repo: https://github.com/wyf1521/astrbot_plugin_sn_ocr
 support_platforms:
   - aiocqhttp
   - qq_official
