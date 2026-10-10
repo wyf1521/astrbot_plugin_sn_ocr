@@ -58,17 +58,17 @@ class SnOcrPlugin(Star):
 
     @filter.command("snocr")
     async def snocr(self, event: AstrMessageEvent) -> MessageEventResult:
-        """识别图片。用法：/snocr [skip|overwrite]，图片可同发，也可随后发送。"""
+        """识别图片。用法：/snocr [skip|overwrite] [部门 姓名]，图片可同发，也可随后发送。"""
         api_base = str(self.config.get("api_base", "")).strip().rstrip("/")
         api_token = str(self.config.get("api_token", "")).strip()
         if not api_base or not api_token:
             yield event.plain_result("Sn_OCR 插件未配置 API 地址或 Token，请先在插件配置中填写。")
             return
 
-        policy = self._duplicate_policy(event.message_str)
+        policy, department, person_name = self._command_options(event.message_str)
         images = self._message_images(event)
         if images:
-            async for text in self._recognize(api_base, api_token, images, policy):
+            async for text in self._recognize(api_base, api_token, images, policy, department, person_name):
                 yield event.plain_result(text)
             return
 
@@ -97,6 +97,8 @@ class SnOcrPlugin(Star):
                     api_token,
                     followup_images,
                     policy,
+                    department,
+                    person_name,
                 ):
                     await followup.send(followup.plain_result(text))
                 controller.stop()
@@ -136,6 +138,8 @@ class SnOcrPlugin(Star):
         api_token: str,
         images: list[Image],
         duplicate_policy: str,
+        department: str,
+        person_name: str,
     ) -> AsyncIterator[str]:
         max_images = self._max_images()
         truncated = len(images) > max_images
@@ -147,6 +151,8 @@ class SnOcrPlugin(Star):
                 api_token,
                 selected,
                 duplicate_policy,
+                department,
+                person_name,
             )
         except Exception as exc:
             logger.exception("Sn_OCR request failed")
@@ -165,15 +171,21 @@ class SnOcrPlugin(Star):
             chain = getattr(message_obj, "chain", [])
         return [component for component in chain if isinstance(component, Image)]
 
-    def _duplicate_policy(self, message: str) -> str:
+    def _command_options(self, message: str) -> tuple[str, str, str]:
         parts = (message or "").split()
         options = parts[1:] if parts and parts[0].lower().lstrip("/") == "snocr" else parts
+        policy_words = {"overwrite", "覆盖", "skip", "跳过"}
         if any(part.lower() in {"overwrite", "覆盖"} for part in options):
-            return "overwrite"
+            policy = "overwrite"
         if any(part.lower() in {"skip", "跳过"} for part in options):
-            return "skip"
+            policy = "skip"
         configured = str(self.config.get("duplicate_policy", "skip")).lower()
-        return configured if configured in {"skip", "overwrite"} else "skip"
+        if "policy" not in locals():
+            policy = configured if configured in {"skip", "overwrite"} else "skip"
+        identity = [part for part in options if part.lower() not in policy_words]
+        department = identity[0] if identity else ""
+        person_name = " ".join(identity[1:]) if len(identity) > 1 else ""
+        return policy, department, person_name
 
     def _image_wait_seconds(self) -> int:
         value = self._as_int(self.config.get("image_wait_seconds", 120), 120)
@@ -196,6 +208,8 @@ class SnOcrPlugin(Star):
         api_token: str,
         images: list[Image],
         duplicate_policy: str,
+        department: str,
+        person_name: str,
     ) -> dict[str, Any]:
         form = aiohttp.FormData()
         opened_files = []
@@ -213,6 +227,10 @@ class SnOcrPlugin(Star):
                     content_type=self._content_type(path.suffix),
                 )
             form.add_field("duplicate_policy", duplicate_policy)
+            if department:
+                form.add_field("department", department)
+            if person_name:
+                form.add_field("person_name", person_name)
             timeout_seconds = self._request_timeout()
             headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
