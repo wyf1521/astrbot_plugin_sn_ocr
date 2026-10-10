@@ -26,5 +26,11 @@
     "type": "int",
     "description": "单条消息最多提交的图片数",
     "default": 20
+  },
+  "image_wait_seconds": {
+    "type": "int",
+    "description": "未附带图片时，等待下一条图片的秒数",
+    "default": 120,
+    "hint": "适用于微信等不能同时发送文字和图片的平台。0 表示关闭，最大 1800 秒。"
   }
 }

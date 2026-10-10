@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,41 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.message.components import Image
+
+try:
+    from astrbot.core.utils.session_waiter import (
+        SessionController,
+        SessionFilter,
+        session_waiter,
+    )
+except ImportError:  # AstrBot < 3.4.36 cannot wait for a later image.
+    SessionController = None
+    SessionFilter = None
+    session_waiter = None
+
+_CANCEL_WORDS = {"取消", "cancel", "退出", "exit"}
+SenderSessionFilter = None
+
+
+def _event_sender_id(event: AstrMessageEvent) -> str:
+    sender_id = event.get_sender_id()
+    if isinstance(sender_id, str) and sender_id:
+        return sender_id
+    message_obj = getattr(event, "message_obj", None)
+    sender = getattr(message_obj, "sender", None)
+    user_id = getattr(sender, "user_id", None)
+    if user_id is None or user_id == "":
+        return ""
+    return str(user_id)
+
+
+if SessionFilter is not None:
+
+    class SenderSessionFilter(SessionFilter):
+        """只匹配同一会话中的同一发送人，避免群聊里其他人的消息被接走。"""
+
+        def filter(self, event: AstrMessageEvent) -> str:
+            return f"snocr:{event.unified_msg_origin}:{_event_sender_id(event)}"
 
 
 class SnOcrPlugin(Star):
@@ -22,7 +58,7 @@ class SnOcrPlugin(Star):
 
     @filter.command("snocr")
     async def snocr(self, event: AstrMessageEvent) -> MessageEventResult:
-        """识别当前消息中的图片。用法：/snocr [skip|overwrite]"""
+        """识别图片。用法：/snocr [skip|overwrite]，图片可同发，也可随后发送。"""
         api_base = str(self.config.get("api_base", "")).strip().rstrip("/")
         api_token = str(self.config.get("api_token", "")).strip()
         if not api_base or not api_token:
@@ -31,25 +67,96 @@ class SnOcrPlugin(Star):
 
         policy = self._duplicate_policy(event.message_str)
         images = self._message_images(event)
-        max_images = min(500, max(1, self._as_int(self.config.get("max_images", 20), 20)))
-        truncated = len(images) > max_images
-        images = images[:max_images]
-        if not images:
-            yield event.plain_result("未找到图片，请把图片和 /snocr 一起发送。")
+        if images:
+            async for text in self._recognize(api_base, api_token, images, policy):
+                yield event.plain_result(text)
             return
 
-        yield event.plain_result(f"正在识别 {len(images)} 张图片，请稍候……")
+        wait_seconds = self._image_wait_seconds()
+        if wait_seconds <= 0 or session_waiter is None or SenderSessionFilter is None:
+            yield event.plain_result(self._missing_image_text())
+            return
+
+        yield event.plain_result(
+            f"请在 {wait_seconds} 秒内发送要识别的图片，回复“取消”可结束等待。"
+        )
+
+        @session_waiter(timeout=wait_seconds, record_history_chains=False)
+        async def image_waiter(
+            controller: SessionController,
+            followup: AstrMessageEvent,
+        ) -> None:
+            followup_images = self._message_images(followup)
+            if followup_images:
+                controller.keep(
+                    timeout=max(wait_seconds, self._request_timeout() + 30),
+                    reset_timeout=True,
+                )
+                async for text in self._recognize(
+                    api_base,
+                    api_token,
+                    followup_images,
+                    policy,
+                ):
+                    await followup.send(followup.plain_result(text))
+                controller.stop()
+                return
+
+            if self._is_cancel(followup.message_str):
+                await followup.send(followup.plain_result("已取消本次识别。"))
+                controller.stop()
+                return
+
+            await followup.send(
+                followup.plain_result("还没有收到图片，请发送图片，或回复“取消”。")
+            )
+            controller.keep(timeout=wait_seconds, reset_timeout=True)
+
         try:
-            result = await self._upload_images(api_base, api_token, images, policy)
+            await image_waiter(event, session_filter=SenderSessionFilter())
+        except TimeoutError:
+            yield event.plain_result("等待图片超时，请重新发送 /snocr。")
+        except Exception as exc:
+            logger.exception("Sn_OCR image wait failed")
+            yield event.plain_result(f"等待图片时发生错误：{self._short_error(exc)}")
+        finally:
+            event.stop_event()
+
+    def _missing_image_text(self) -> str:
+        if self._image_wait_seconds() > 0 and session_waiter is None:
+            return (
+                "未找到图片。当前 AstrBot 版本不支持分步识别，"
+                "请把图片和 /snocr 一起发送，或升级到 v3.4.36 及以上。"
+            )
+        return "未找到图片，请把图片和 /snocr 一起发送。"
+
+    async def _recognize(
+        self,
+        api_base: str,
+        api_token: str,
+        images: list[Image],
+        duplicate_policy: str,
+    ) -> AsyncIterator[str]:
+        max_images = self._max_images()
+        truncated = len(images) > max_images
+        selected = images[:max_images]
+        yield f"正在识别 {len(selected)} 张图片，请稍候……"
+        try:
+            result = await self._upload_images(
+                api_base,
+                api_token,
+                selected,
+                duplicate_policy,
+            )
         except Exception as exc:
             logger.exception("Sn_OCR request failed")
-            yield event.plain_result(f"Sn_OCR 请求失败：{self._short_error(exc)}")
+            yield f"Sn_OCR 请求失败：{self._short_error(exc)}"
             return
 
         text = self._format_response(result)
         if truncated:
             text = f"已按插件上限截取前 {max_images} 张图片。\n{text}"
-        yield event.plain_result(text)
+        yield text
 
     def _message_images(self, event: AstrMessageEvent) -> list[Image]:
         message_obj = getattr(event, "message_obj", None)
@@ -67,6 +174,21 @@ class SnOcrPlugin(Star):
             return "skip"
         configured = str(self.config.get("duplicate_policy", "skip")).lower()
         return configured if configured in {"skip", "overwrite"} else "skip"
+
+    def _image_wait_seconds(self) -> int:
+        value = self._as_int(self.config.get("image_wait_seconds", 120), 120)
+        return min(1800, max(0, value))
+
+    def _request_timeout(self) -> int:
+        return max(1, self._as_int(self.config.get("timeout", 180), 180))
+
+    def _max_images(self) -> int:
+        return min(500, max(1, self._as_int(self.config.get("max_images", 20), 20)))
+
+    @staticmethod
+    def _is_cancel(message: str) -> bool:
+        normalized = (message or "").strip().lower().lstrip("/")
+        return normalized in _CANCEL_WORDS
 
     async def _upload_images(
         self,
@@ -91,7 +213,7 @@ class SnOcrPlugin(Star):
                     content_type=self._content_type(path.suffix),
                 )
             form.add_field("duplicate_policy", duplicate_policy)
-            timeout_seconds = max(1, self._as_int(self.config.get("timeout", 180), 180))
+            timeout_seconds = self._request_timeout()
             headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
             async with aiohttp.ClientSession(timeout=timeout) as session:
