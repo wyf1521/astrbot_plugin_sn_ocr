@@ -44,3 +44,23 @@
 也可以使用 `skip`、`跳过` 或 `覆盖`，例如 `/snocr overwrite 工程 小明`。命令中的策略、部门和姓名会用于随后发来的图片。
 
 插件按批量接口一次提交这条图片消息中的图片；没有图片且未开启等待时不会发起请求。
+
+## 更新仓库并重启
+
+AstrBot 管理员发送：
+
+```text
+/snupdate
+```
+
+插件会在运行 AstrBot 的这台机器上执行：
+
+```bash
+git -C /opt/Sn_OCR pull --ff-only
+systemctl restart sn_ocr
+systemctl is-active sn_ocr
+```
+
+这要求 AstrBot 和 Sn_OCR 在同一台服务器上，并且进程用户能拉取 `/opt/Sn_OCR`、能执行 `systemctl restart sn_ocr`。目录、服务名和是否使用 `sudo -n` 可在插件配置里改。`deploy_user_ids` 留空时，所有 AstrBot 管理员都可以执行；填上用户 ID 后只允许这些账号。
+
+该指令只更新 Sn_OCR 服务仓库并重启 `sn_ocr`，不会更新 AstrBot 插件目录本身。

@@ -15,7 +15,10 @@
     "type": "string",
     "description": "默认重复记录策略",
     "default": "skip",
-    "options": ["skip", "overwrite"]
+    "options": [
+      "skip",
+      "overwrite"
+    ]
   },
   "timeout": {
     "type": "int",
@@ -32,5 +35,30 @@
     "description": "未附带图片时，等待下一条图片的秒数",
     "default": 120,
     "hint": "适用于微信等不能同时发送文字和图片的平台。0 表示关闭，最大 1800 秒。"
+  },
+  "deploy_enabled": {
+    "type": "bool",
+    "description": "允许管理员使用 /snupdate 更新仓库并重启",
+    "default": true
+  },
+  "deploy_repo": {
+    "type": "string",
+    "description": "Sn_OCR 仓库目录",
+    "default": "/opt/Sn_OCR"
+  },
+  "deploy_service": {
+    "type": "string",
+    "description": "systemd 服务名",
+    "default": "sn_ocr"
+  },
+  "deploy_use_sudo": {
+    "type": "bool",
+    "description": "重启时使用 sudo -n systemctl（需要免密 sudo）",
+    "default": false
+  },
+  "deploy_user_ids": {
+    "type": "string",
+    "description": "允许更新的用户 ID，逗号分隔。留空表示所有 AstrBot 管理员",
+    "default": ""
   }
 }

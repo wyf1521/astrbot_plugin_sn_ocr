@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,21 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.message.components import Image
+
+_PLUGIN_DIR = Path(__file__).resolve().parent
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
+import deploy_cmd
+
+
+def _admin_command(func):
+    permission = getattr(filter, "permission_type", None)
+    permission_type = getattr(filter, "PermissionType", None)
+    if permission is None or permission_type is None:
+        return func
+    return permission(permission_type.ADMIN)(func)
+
+
 
 try:
     from astrbot.core.utils.session_waiter import (
@@ -124,6 +140,56 @@ class SnOcrPlugin(Star):
         finally:
             event.stop_event()
 
+
+    @_admin_command
+    @filter.command("snupdate")
+    async def snupdate(self, event: AstrMessageEvent):
+        """拉取 /opt/Sn_OCR 并重启 sn_ocr。仅 AstrBot 管理员可用。"""
+        if not deploy_cmd.deploy_allowed(
+            self._event_is_admin(event),
+            _event_sender_id(event),
+            str(self.config.get("deploy_user_ids", "")),
+        ):
+            yield event.plain_result("没有权限更新仓库。")
+            return
+        if not self._as_bool(self.config.get("deploy_enabled", True)):
+            yield event.plain_result("更新指令已关闭，请在插件配置中启用 deploy_enabled。")
+            return
+        try:
+            repo, service = deploy_cmd.validate_target(
+                str(self.config.get("deploy_repo", "/opt/Sn_OCR")),
+                str(self.config.get("deploy_service", "sn_ocr")),
+            )
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+
+        use_sudo = self._as_bool(self.config.get("deploy_use_sudo", False))
+        yield event.plain_result(f"开始更新 {repo} ……")
+        code, output = await deploy_cmd.run_command(deploy_cmd.pull_command(repo), timeout=180)
+        if code != 0:
+            yield event.plain_result(f"git pull 失败（退出码 {code}）：\n{output or '没有输出'}")
+            return
+
+        yield event.plain_result(
+            f"代码已更新。\n{output or '没有新的提交'}\n正在重启 {service} ……"
+        )
+        code, output = await deploy_cmd.run_command(
+            deploy_cmd.restart_command(service, use_sudo),
+            timeout=90,
+        )
+        if code != 0:
+            yield event.plain_result(f"重启失败（退出码 {code}）：\n{output or '没有输出'}")
+            return
+
+        status_code, status = await deploy_cmd.run_command(
+            deploy_cmd.status_command(service, use_sudo),
+            timeout=20,
+        )
+        state = status.strip() or f"退出码 {status_code}"
+        yield event.plain_result(f"已重启 {service}，当前状态：{state}")
+        event.stop_event()
+
     def _missing_image_text(self) -> str:
         if self._image_wait_seconds() > 0 and session_waiter is None:
             return (
@@ -186,6 +252,23 @@ class SnOcrPlugin(Star):
         department = identity[0] if identity else ""
         person_name = " ".join(identity[1:]) if len(identity) > 1 else ""
         return policy, department, person_name
+
+    def _event_is_admin(self, event: AstrMessageEvent) -> bool:
+        checker = getattr(event, "is_admin", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "开启"}
 
     def _image_wait_seconds(self) -> int:
         value = self._as_int(self.config.get("image_wait_seconds", 120), 120)
