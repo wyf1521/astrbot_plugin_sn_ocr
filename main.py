@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from collections.abc import AsyncIterator
@@ -71,6 +72,7 @@ class SnOcrPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self._http_session: aiohttp.ClientSession | None = None
 
     @filter.command("snocr")
     async def snocr(self, event: AstrMessageEvent) -> MessageEventResult:
@@ -241,17 +243,39 @@ class SnOcrPlugin(Star):
         parts = (message or "").split()
         options = parts[1:] if parts and parts[0].lower().lstrip("/") == "snocr" else parts
         policy_words = {"overwrite", "覆盖", "skip", "跳过"}
+        policy = "skip"
         if any(part.lower() in {"overwrite", "覆盖"} for part in options):
             policy = "overwrite"
         if any(part.lower() in {"skip", "跳过"} for part in options):
             policy = "skip"
-        configured = str(self.config.get("duplicate_policy", "skip")).lower()
-        if "policy" not in locals():
-            policy = configured if configured in {"skip", "overwrite"} else "skip"
         identity = [part for part in options if part.lower() not in policy_words]
         department = identity[0] if identity else ""
         person_name = " ".join(identity[1:]) if len(identity) > 1 else ""
         return policy, department, person_name
+
+    async def _get_http_session(self, timeout_seconds: int) -> aiohttp.ClientSession:
+        session = self._http_session
+        if session is None or session.closed:
+            timeout = aiohttp.ClientTimeout(
+                total=timeout_seconds,
+                connect=min(15, timeout_seconds),
+                sock_read=timeout_seconds,
+            )
+            connector = aiohttp.TCPConnector(
+                limit=4,
+                limit_per_host=2,
+                ttl_dns_cache=300,
+                enable_cleanup_closed=True,
+            )
+            session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            self._http_session = session
+        return session
+
+    async def terminate(self):
+        session = self._http_session
+        self._http_session = None
+        if session is not None and not session.closed:
+            await session.close()
 
     def _event_is_admin(self, event: AstrMessageEvent) -> bool:
         checker = getattr(event, "is_admin", None)
@@ -297,10 +321,17 @@ class SnOcrPlugin(Star):
         form = aiohttp.FormData()
         opened_files = []
         try:
-            for index, image in enumerate(images, start=1):
+            async def resolve_image(index: int, image: Image) -> Path:
                 path = Path(await image.convert_to_file_path())
                 if not path.is_file():
                     raise ValueError(f"第 {index} 张图片无法读取")
+                return path
+
+            paths = await asyncio.gather(*(
+                resolve_image(index, image)
+                for index, image in enumerate(images, start=1)
+            ))
+            for index, path in enumerate(paths, start=1):
                 stream = path.open("rb")
                 opened_files.append(stream)
                 form.add_field(
@@ -316,19 +347,18 @@ class SnOcrPlugin(Star):
                 form.add_field("person_name", person_name)
             timeout_seconds = self._request_timeout()
             headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
-            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(f"{api_base}/api/v1/ocr", data=form, headers=headers) as response:
-                    body = await response.text()
-                    try:
-                        payload = json.loads(body)
-                    except json.JSONDecodeError:
-                        payload = {"success": False, "error": f"服务返回非 JSON（HTTP {response.status}）"}
-                    if not isinstance(payload, dict):
-                        payload = {"success": False, "error": f"服务返回了无效 JSON（HTTP {response.status}）"}
-                    if response.status >= 400 and "error" not in payload:
-                        payload["error"] = f"HTTP {response.status}"
-                    return payload
+            session = await self._get_http_session(timeout_seconds)
+            async with session.post(f"{api_base}/api/v1/ocr", data=form, headers=headers) as response:
+                body = await response.text()
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError:
+                    payload = {"success": False, "error": f"服务返回非 JSON（HTTP {response.status}）"}
+                if not isinstance(payload, dict):
+                    payload = {"success": False, "error": f"服务返回了无效 JSON（HTTP {response.status}）"}
+                if response.status >= 400 and "error" not in payload:
+                    payload["error"] = f"HTTP {response.status}"
+                return payload
         finally:
             for stream in opened_files:
                 stream.close()

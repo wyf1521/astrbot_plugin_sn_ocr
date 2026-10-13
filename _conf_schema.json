@@ -11,15 +11,6 @@
     "default": "",
     "hint": "C85X2KJIKL72AqZWIr19qg=="
   },
-  "duplicate_policy": {
-    "type": "string",
-    "description": "默认重复记录策略",
-    "default": "skip",
-    "options": [
-      "skip",
-      "overwrite"
-    ]
-  },
   "timeout": {
     "type": "int",
     "description": "单次请求超时（秒）",

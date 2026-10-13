@@ -1,7 +1,7 @@
 name: astrbot_plugin_sn_ocr
 display_name: Sn_OCR 电脑信息识别
 desc: 调用 Sn_OCR 的外部 OCR 接口识别电脑信息截图，管理员可用 /snupdate 更新仓库并重启服务。
-version: 1.2.0
+version: 1.3.0
 author: Sn_OCR
 support_platforms:
   - aiocqhttp
